@@ -2127,16 +2127,6 @@ mod test {
             CompilerArguments::CannotCache("-FR", None),
             parse_arguments(ovec!["-c", "foo.c", "-FR", "-Fofoo.obj"])
         );
-
-        assert_eq!(
-            CompilerArguments::CannotCache("-Fp", None),
-            parse_arguments(ovec!["-c", "-Fpfoo.h", "foo.c"])
-        );
-
-        assert_eq!(
-            CompilerArguments::CannotCache("-Yc", None),
-            parse_arguments(ovec!["-c", "-Ycfoo.h", "foo.c"])
-        );
     }
 
     #[test]
@@ -2461,6 +2451,102 @@ mod test {
     }
 
     #[test]
+    fn test_responsefile_recursive() {
+        let td = tempfile::Builder::new()
+            .prefix("sccache")
+            .tempdir()
+            .unwrap();
+        let inner_file_path = td.path().join("inner");
+        {
+            let mut file = File::create(&inner_file_path).unwrap();
+            let content = b"-c foo.c";
+            file.write_all(content).unwrap();
+        }
+        let cmd_file_path = td.path().join("cmd");
+        {
+            let mut file = File::create(&cmd_file_path).unwrap();
+            let content = format!("@{}\n-o foo.o", inner_file_path.display());
+            file.write_all(content.as_bytes()).unwrap();
+        }
+        let arg = format!("@{}", cmd_file_path.display());
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments(ovec![arg]) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Failed to parse @-file, err: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
+        assert!(preprocessor_args.is_empty());
+        assert!(common_args.is_empty());
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_responsefile_recursive_with_quotes() {
+        let td = tempfile::Builder::new()
+            .prefix("sccache")
+            .tempdir()
+            .unwrap();
+        let inner_file_path = td.path().join("inner");
+        {
+            let mut file = File::create(&inner_file_path).unwrap();
+            let content = b"-c foo.c";
+            file.write_all(content).unwrap();
+        }
+        let cmd_file_path = td.path().join("cmd");
+        {
+            let mut file = File::create(&cmd_file_path).unwrap();
+            let content = format!("@\"{}\"\n-o foo.o", inner_file_path.display());
+            file.write_all(content.as_bytes()).unwrap();
+        }
+        let arg = format!("@{}", cmd_file_path.display());
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments(ovec![arg]) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Failed to parse @-file, err: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
+        assert!(preprocessor_args.is_empty());
+        assert!(common_args.is_empty());
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
     fn test_parse_arguments_missing_pdb() {
         assert_eq!(
             CompilerArguments::CannotCache("shared pdb", None),
@@ -2661,6 +2747,110 @@ mod test {
         assert_eq!(
             ovec![std::env::current_dir().unwrap().join("list.txt")],
             extra_hash_files
+        );
+    }
+
+    #[test]
+    fn test_precompiled_header_create() {
+        let args = ovec!["/c", "/Ycfoo.h", "foo.cpp"];
+        let ParsedArguments {
+            input,
+            language,
+            compilation_flag,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.cpp"), input.to_str());
+        assert_eq!(Language::Cxx, language);
+        assert_eq!(Some("/c"), compilation_flag.to_str());
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.obj"),
+                    optional: false
+                }
+            ),
+            (
+                "pch",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.pch"),
+                    optional: false
+                }
+            ),
+            (
+                "tlh",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.tlh"),
+                    optional: true
+                }
+            ),
+            (
+                "tli",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.tli"),
+                    optional: true
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn test_precompiled_header_create_named() {
+        let args = ovec!["/c", "/Ycfoo.h", "/Fp:foo.customext", "foo.cpp"];
+        let ParsedArguments {
+            input,
+            language,
+            compilation_flag,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.cpp"), input.to_str());
+        assert_eq!(Language::Cxx, language);
+        assert_eq!(Some("/c"), compilation_flag.to_str());
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.obj"),
+                    optional: false
+                }
+            ),
+            (
+                "pch",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.customext"),
+                    optional: false
+                }
+            ),
+            (
+                "tlh",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.tlh"),
+                    optional: true
+                }
+            ),
+            (
+                "tli",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.tli"),
+                    optional: true
+                }
+            )
         );
     }
 
