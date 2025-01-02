@@ -274,6 +274,8 @@ ArgData! {
     XClang(OsString), // -Xclang ...
     Clang(OsString), // -clang:...
     ExternalIncludePath(PathBuf),
+    PrecompiledHeaderCreate(PathBuf),
+    PrecompiledHeaderName(PathBuf),
 }
 
 use self::ArgData::*;
@@ -315,7 +317,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("Fi", PathBuf, Concatenated, TooHardPath),
     msvc_take_arg!("Fm", PathBuf, Concatenated, PassThroughWithPath), // No effect if /c is specified.
     msvc_take_arg!("Fo", PathBuf, Concatenated, Output),
-    msvc_take_arg!("Fp", PathBuf, Concatenated, TooHardPath), // allows users to specify the name for a PCH (when using /Yu or /Yc), PCHs are not supported in sccache.
+    msvc_take_arg!("Fp:", PathBuf, Concatenated, PrecompiledHeaderName), // allows users to specify the name for a PCH (when using /Yu or /Yc).
     msvc_take_arg!("Fr", PathBuf, Concatenated, TooHardPath),
     msvc_flag!("Fx", TooHardFlag),
     msvc_flag!("GA", PassThrough),
@@ -401,8 +403,9 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("Wv:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("X", PassThrough),
     msvc_take_arg!("Xclang", OsString, Separated, XClang),
-    msvc_take_arg!("Yc", PathBuf, Concatenated, TooHardPath), // Compile PCH - not yet supported.
+    msvc_take_arg!("Yc", PathBuf, Concatenated, PrecompiledHeaderCreate), // Compile PCH
     msvc_flag!("Yd", PassThrough),
+    msvc_take_arg!("Yu", PathBuf, Concatenated, PassThroughWithPath), // Use PCH
     msvc_flag!("Z7", PassThrough), // Add debug info to .obj files.
     msvc_take_arg!("ZH:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("ZI", DebugInfo), // Implies /FC, which puts absolute paths in error messages -> TooHardFlag?
@@ -499,7 +502,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("@", PathBuf, Concatenated, TooHardPath),
 ]);
 
-// TODO: what do do with precompiled header flags? eg: /Y-, /Yc, /YI, /Yu, /Zf, /Zm
+// TODO: what do do with precompiled header flags? eg: /Y-, /YI, /Zf, /Zm
 
 pub fn parse_arguments(
     arguments: &[OsString],
@@ -525,6 +528,9 @@ pub fn parse_arguments(
     let mut profile_generate = false;
     let mut multiple_input = false;
     let mut multiple_input_files = Vec::new();
+
+    let mut generating_pch = false;
+    let mut precompiled_header_path = None;
 
     // Custom iterator to expand `@` arguments which stand for reading a file
     // and interpreting it as a list of more arguments.
@@ -571,6 +577,13 @@ pub fn parse_arguments(
             }
             Some(XClang(s)) => xclangs.push(s.clone()),
             Some(Clang(s)) => clangs.push(s.clone()),
+            // This order is important, we handle Yc then Fp.
+            // TODO: Maybe just have 2 separate vars?
+            Some(PrecompiledHeaderCreate(p)) => {
+                generating_pch = true;
+                precompiled_header_path = Some(p.with_extension("pch"));
+            },
+            Some(PrecompiledHeaderName(p)) => precompiled_header_path = Some(p.clone()),
             None => {
                 match arg {
                     Argument::Raw(ref val) if val == "--" => {
@@ -598,6 +611,8 @@ pub fn parse_arguments(
                         .iter_os_strings(),
                 ),
             Some(ProgramDatabase(_))
+            | Some(PrecompiledHeaderCreate(_))
+            | Some(PrecompiledHeaderName(_))
             | Some(DebugInfo)
             | Some(PassThrough)
             | Some(PassThroughWithPath(_))
@@ -820,6 +835,17 @@ pub fn parse_arguments(
             }
         };
     }
+
+    if generating_pch && !precompiled_header_path.is_none() {
+        outputs.insert(
+            "pch",
+            ArtifactDescriptor {
+                path: precompiled_header_path.unwrap(),
+                optional: false
+            }
+        );
+    }
+
 
     CompilerArguments::Ok(ParsedArguments {
         input: input.into(),
