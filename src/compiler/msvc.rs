@@ -1207,7 +1207,7 @@ impl<'a> Iterator for ExpandIncludeFile<'a> {
             };
             let file_path = self.cwd.join(file_arg);
             // Read the contents of the response file, accounting for non-utf8 encodings.
-            let content = match File::open(&file_path).and_then(|mut file| read_text(&mut file)) {
+            let mut content = match File::open(&file_path).and_then(|mut file| read_text(&mut file)) {
                 Ok(content) => content,
                 Err(err) => {
                     debug!("failed to read @-file `{}`: {}", file_path.display(), err);
@@ -1215,6 +1215,32 @@ impl<'a> Iterator for ExpandIncludeFile<'a> {
                     return Some(arg);
                 }
             };
+
+            // Expand recursively 1 level of sub response files. This is out of spec however MSVC
+            // does support it, but generally it's not a great idea to do so.
+            content = content
+                .lines()
+                .map(str::trim)
+                .flat_map(|nested_line| {
+                    if nested_line.starts_with('@') {
+                        trace!("found nested @-file: {}", nested_line);
+
+                        let nested_arg = &nested_line[1..].trim_matches('"');
+                        let nested_path = self.cwd.join(nested_arg);
+                        match File::open(&nested_path).and_then(|mut file| read_text(&mut file)) {
+                            Ok(contents) => contents.lines().map(String::from).collect::<Vec<_>>().into_iter(),
+                            Err(err) => {
+                                debug!("failed to read nested @-file `{}`: {}", nested_path.display(), err);
+                                vec![nested_line.to_owned()].into_iter()
+                            }
+                        }
+                    }
+                    else {
+                        vec![nested_line.to_owned()].into_iter()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\r\n");
 
             trace!("Expanded response file {:?} to {:?}", file_path, content);
 
