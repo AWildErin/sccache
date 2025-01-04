@@ -317,7 +317,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("Fi", PathBuf, Concatenated, TooHardPath),
     msvc_take_arg!("Fm", PathBuf, Concatenated, PassThroughWithPath), // No effect if /c is specified.
     msvc_take_arg!("Fo", PathBuf, Concatenated, Output),
-    msvc_take_arg!("Fp:", PathBuf, Concatenated, PrecompiledHeaderName), // allows users to specify the name for a PCH (when using /Yu or /Yc).
+    msvc_take_arg!("Fp", PathBuf, Concatenated, PrecompiledHeaderName), // allows users to specify the name for a PCH (when using /Yu or /Yc).
     msvc_take_arg!("Fr", PathBuf, Concatenated, TooHardPath),
     msvc_flag!("Fx", TooHardFlag),
     msvc_flag!("GA", PassThrough),
@@ -577,8 +577,6 @@ pub fn parse_arguments(
             }
             Some(XClang(s)) => xclangs.push(s.clone()),
             Some(Clang(s)) => clangs.push(s.clone()),
-            // This order is important, we handle Yc then Fp.
-            // TODO: Maybe just have 2 separate vars?
             Some(PrecompiledHeaderCreate(p)) => {
                 generating_pch = true;
                 precompiled_header_path = Some(p.with_extension("pch"));
@@ -2804,7 +2802,7 @@ mod test {
 
     #[test]
     fn test_precompiled_header_create_named() {
-        let args = ovec!["/c", "/Ycfoo.h", "/Fp:foo.customext", "foo.cpp"];
+        let args = ovec!["/c", "/Ycfoo.h", "/Fpfoo.customext", "foo.cpp"];
         let ParsedArguments {
             input,
             language,
